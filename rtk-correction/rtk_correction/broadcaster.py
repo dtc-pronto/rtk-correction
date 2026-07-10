@@ -16,8 +16,8 @@ class Basestation(Node):
         self.context_ = zmq.Context()
         self.socket = self.context_.socket(zmq.PUB)
        
-        self.declare_parameter("ip", "127.0.0.1")
-        self.declare_parameter("port", 7505)
+        self.declare_parameter("ip", "10.10.10.10")
+        self.declare_parameter("port", 7507)
 
         ip = self.get_parameter("ip").value
         port = self.get_parameter("port").value
