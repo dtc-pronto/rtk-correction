@@ -41,7 +41,7 @@ class RTKReceiver(Node):
                 self.get_logger().info("[RTK] Recieved corrections", once=True)
 
                 msg = Message()
-                msg.header.stamp = rospy.Time.now()
+                msg.header.stamp = self.get_clock().now().to_msg()
                 msg.message = rtcm_raw
                 self.pub.publish(msg)
 
