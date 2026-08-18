@@ -3,7 +3,9 @@ FROM dtcpronto/ros-jazzy:l4t
 RUN sudo apt update && sudo apt install -y \
  ros-jazzy-rtcm-msgs \
  python3-zmq \
- python3-serial
+ python3-serial \
+ iproute2 \
+ iputils-ping
 
 RUN pip3 install --break-system-packages pyrtcm
 
