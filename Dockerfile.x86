@@ -7,6 +7,11 @@ RUN sudo apt update && sudo apt install -y \
  iproute2 \
  iputils-ping
 
+# The base image ships a few ROS packages from a different snapshot than
+# the rest, which breaks rtcm_msgs serialization at runtime (undefined
+# symbol in fastcdr). Bring everything onto one consistent snapshot.
+RUN sudo apt update && sudo apt upgrade -y
+
 RUN pip3 install --break-system-packages pyrtcm
 
 COPY ./rtk-correction ws/src/rtk-correction
