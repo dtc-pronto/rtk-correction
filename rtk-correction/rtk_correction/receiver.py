@@ -66,6 +66,8 @@ class RTKReceiver(Node):
         self._stale_logged = False
         self._using_wifi = False
         self._last_rajant_probe = 0.0
+        self._rajant_connected = False
+        self._wifi_connected = False
 
         self.pub = self.create_publisher(Message, '/rtcm', 1)
 
@@ -159,6 +161,9 @@ class RTKReceiver(Node):
                     try:
                         rtcm_raw = self.rajant_socket.recv(flags=zmq.NOBLOCK)
                         self._last_rajant_msg = now
+                        if not self._rajant_connected:
+                            self.get_logger().info("[RTK] Rajant connection recovered")
+                            self._rajant_connected = True
                         self._using_wifi = False
                         self._publish_rtcm(rtcm_raw)
                         continue
@@ -168,6 +173,9 @@ class RTKReceiver(Node):
             try:
                 rtcm_raw = self.rajant_socket.recv(flags=zmq.NOBLOCK)
                 self._last_rajant_msg = now
+                if not self._rajant_connected:
+                    self.get_logger().info("[RTK] Rajant connection established")
+                    self._rajant_connected = True
                 self._using_wifi = False
                 self._publish_rtcm(rtcm_raw)
                 continue
@@ -178,6 +186,9 @@ class RTKReceiver(Node):
                 try:
                     rtcm_raw = self.wifi_socket.recv(flags=zmq.NOBLOCK)
                     self._last_wifi_msg = now
+                    if not self._wifi_connected:
+                        self.get_logger().info("[RTK] WiFi connection established")
+                        self._wifi_connected = True
                     self._using_wifi = True
                     self._publish_rtcm(rtcm_raw)
                     continue
@@ -190,19 +201,23 @@ class RTKReceiver(Node):
             if self._last_rajant_msg is not None:
                 if now - self._last_rajant_msg > self.rajant_stale_timeout:
                     self._last_rajant_msg = None
+                    if self._rajant_connected:
+                        self.get_logger().warn("[RTK] Rajant connection lost")
+                        self._rajant_connected = False
                     self.get_logger().warn(
                         f"[RTK] Rajant has been silent for {self.rajant_stale_timeout}s; "
                         "trying WiFi fallback"
                     )
                     self._using_wifi = bool(self.wifi_socket is not None)
-            elif self.wifi_socket is not None and self._last_wifi_msg is not None:
+            if self.wifi_socket is not None and self._last_wifi_msg is not None:
                 if now - self._last_wifi_msg > self.wifi_stale_timeout:
+                    if self._wifi_connected:
+                        self.get_logger().warn("[RTK] WiFi connection lost")
+                        self._wifi_connected = False
                     self.get_logger().warn(
-                        f"[RTK] WiFi has been silent for {self.wifi_stale_timeout}s; "
-                        "switching back to Rajant"
+                        f"[RTK] WiFi has been silent for {self.wifi_stale_timeout}s"
                     )
                     self._last_wifi_msg = None
-                    self._using_wifi = False
 
             self._check_stale()
             time.sleep(0.1)
