@@ -26,8 +26,8 @@ class RTKReceiver(Node):
         super().__init__('rtk_receiver')
 
         self.declare_parameter("rajant_ip", "10.10.10.10")
-        self.declare_parameter("rtk_port", 7507)
-        self.declare_parameter("wifi_info_port", 7509)
+        self.declare_parameter("rtk_port", 7501)
+        self.declare_parameter("wifi_info_port", 7502)
         self.declare_parameter("wifi_scan_subnet", "")
         self.declare_parameter("rajant_stale_timeout", 5.0)
         self.declare_parameter("wifi_stale_timeout", 5.0)
