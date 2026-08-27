@@ -6,6 +6,10 @@
 # `wifi_info_port` so the receiver can learn the WiFi path without broadcast
 # or a subnet scan by default.
 
+import re
+import subprocess
+from typing import Optional
+
 import rclpy
 from rclpy.node import Node
 import serial
@@ -14,19 +18,18 @@ from pyrtcm import RTCMReader
 
 from rtk_correction.beacon import WIFI_INFO_PREFIX
 
+INET_RE = re.compile(r"inet\s+(\d+\.\d+\.\d+\.\d+)")
+
+
 def get_interface_ipv4(interface: str) -> Optional[str]:
-    """
-    Read whatever IPv4 address is currently assigned to `interface`, or
-    None if the interface doesn't exist or has no address. Used for WiFi,
-    where the address can't be hardcoded because it's handed out by
-    whatever network is present at a given site.
-    """
     try:
         result = subprocess.run(
             ["ip", "-4", "addr", "show", "dev", interface],
-            capture_output=True, text=True, timeout=2.0,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
         )
-    except Exception:
+    except OSError:
         return None
 
     if result.returncode != 0:
