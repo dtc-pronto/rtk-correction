@@ -10,13 +10,22 @@ source /opt/ros/jazzy/setup.bash
 source ws/install/setup.bash
 if [ "${RTK}" == "true" ]; then
     if [[ " ${UGVS[*]} " == *" $HOSTNAME "* ]]; then
-        ros2 launch rtk_correction receiver.launch.py
+        ros2 launch rtk_correction receiver.launch.py \
+            wifi_ip:=${BASESTATION_IP} \
+            rtk_port:=${RTK_PORT} \
+            wifi_info_port:=${WIFI_INFO_PORT} &
     
     elif [[ " ${UAVS[*]} " == *" $HOSTNAME "* ]]; then
-        ros2 launch rtk_correction receiver.launch.py
+        ros2 launch rtk_correction receiver.launch.py \
+            wifi_ip:=${BASESTATION_IP} \
+            rtk_port:=${RTK_PORT} \
+            wifi_info_port:=${WIFI_INFO_PORT} &
     
     elif [[ " ${BASESTATIONS[*]} " == *" $HOSTNAME "* ]]; then
-        ros2 launch rtk_correction broadcaster.launch.py 
+        ros2 launch rtk_correction broadcaster.launch.py \
+            rtk_port:=${RTK_PORT} \
+            wifi_interface:=${WIFI_INTERFACE} \
+            wifi_info_port:=${WIFI_INFO_PORT} & 
     else
         echo "Error: Hostname '$HOSTNAME' not recognized."
         exit 1
