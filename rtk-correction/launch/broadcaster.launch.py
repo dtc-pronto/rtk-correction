@@ -11,7 +11,6 @@ def generate_launch_description():
         DeclareLaunchArgument('rajant_ip', default_value='10.10.10.10'),
         DeclareLaunchArgument('rtk_port', default_value='7501'),
         DeclareLaunchArgument('wifi_info_port', default_value='7502'),
-
         # WiFi -- standby path, address discovered at runtime
         DeclareLaunchArgument('wifi_interface', default_value='wlan0'),
     ]
