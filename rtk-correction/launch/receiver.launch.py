@@ -7,29 +7,19 @@ from launch_ros.actions import Node
 def generate_launch_description():
 
     args = [
-        # Rajant -- primary path, static/known address, connected immediately
-        DeclareLaunchArgument('ip', default_value='10.10.10.10'),
-        DeclareLaunchArgument('port', default_value='7507'),
-        DeclareLaunchArgument('rajant_interface', default_value='rajant'),
+        # Rajant -- primary data path, static/known address, connected immediately
+        DeclareLaunchArgument('rajant_ip', default_value='10.10.10.10'),
+        DeclareLaunchArgument('rtk_port', default_value='7501'),
+        DeclareLaunchArgument('wifi_info_port', default_value='7502'),
 
-        # Each receiver independently decides whether to use WiFi when its
-        # own Rajant path is unhealthy.
-        DeclareLaunchArgument('enable_wifi_failover', default_value='true'),
+        # WiFi discovery -- learned WiFi endpoint first, then subnet scan fallback
+        DeclareLaunchArgument('wifi_ip', default_value='192.168.60.10'),
 
-        # WiFi discovery -- beacon first (fast), block scan as a fallback
-        # if no beacon is heard (e.g. broadcast blocked on the network).
-        # wifi_scan_subnet must be set (e.g. "192.168.1.0/24") for the
-        # scan fallback to be used at all; left empty, scanning is skipped.
-        DeclareLaunchArgument('beacon_port', default_value='7508'),
-        DeclareLaunchArgument('beacon_wait_timeout', default_value='8.0'),
-        DeclareLaunchArgument('wifi_scan_subnet', default_value=''),
-
-        # How long with no corrections at all before flagging the link as stale
-        DeclareLaunchArgument('stale_timeout', default_value='5.0'),
-        DeclareLaunchArgument('ping_interval', default_value='1.5'),
-        DeclareLaunchArgument('ping_timeout', default_value='1.0'),
-        DeclareLaunchArgument('fail_threshold', default_value='3'),
-        DeclareLaunchArgument('recover_threshold', default_value='3'),
+        # Hysteresis for deciding when Rajant is effectively stale
+        DeclareLaunchArgument('rajant_stale_timeout', default_value='5.0'),
+        DeclareLaunchArgument('wifi_stale_timeout', default_value='5.0'),
+        DeclareLaunchArgument('rajant_probe_interval', default_value='4.0'),
+        DeclareLaunchArgument('wifi_probe_interval', default_value='4.0'),
     ]
 
     node = Node(
@@ -39,18 +29,14 @@ def generate_launch_description():
         output='screen',
         emulate_tty=True,
         parameters=[{
-            'ip': LaunchConfiguration('ip'),
-            'port': LaunchConfiguration('port'),
-            'rajant_interface': LaunchConfiguration('rajant_interface'),
-            'enable_wifi_failover': LaunchConfiguration('enable_wifi_failover'),
-            'beacon_port': LaunchConfiguration('beacon_port'),
-            'beacon_wait_timeout': LaunchConfiguration('beacon_wait_timeout'),
-            'wifi_scan_subnet': LaunchConfiguration('wifi_scan_subnet'),
-            'stale_timeout': LaunchConfiguration('stale_timeout'),
-            'ping_interval': LaunchConfiguration('ping_interval'),
-            'ping_timeout': LaunchConfiguration('ping_timeout'),
-            'fail_threshold': LaunchConfiguration('fail_threshold'),
-            'recover_threshold': LaunchConfiguration('recover_threshold'),
+            'rajant_ip': LaunchConfiguration('rajant_ip'),
+            'rtk_port': LaunchConfiguration('rtk_port'),
+            'wifi_info_port': LaunchConfiguration('wifi_info_port'),
+            'wifi_ip': LaunchConfiguration('wifi_ip'),
+            'rajant_stale_timeout': LaunchConfiguration('rajant_stale_timeout'),
+            'wifi_stale_timeout': LaunchConfiguration('wifi_stale_timeout'),
+            'rajant_probe_interval': LaunchConfiguration('rajant_probe_interval'),
+            'wifi_probe_interval': LaunchConfiguration('wifi_probe_interval'),
         }],
     )
 

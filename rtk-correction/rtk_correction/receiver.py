@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
-# rover receiver
+# Rover receiver.
 #
-# Connects to Rajant's known, static address immediately (no discovery
-# needed there). In the background it also listens for WiFi beacons from
-# the broadcaster and keeps a second connection ready ("warm standby") --
-# if no beacon shows up within a timeout (e.g. broadcast is being blocked
-# on the network), it falls back to scanning a known subnet block for the
-# broadcaster instead.
+# Rajant is the primary path and is always connected to the known static IP.
+# The broadcaster also sends the WiFi IP over a separate Rajant control port
+# and pushes the same RTK data over WiFi on the same `rtk_port`.
 #
-# Rajant and WiFi use separate SUB sockets. The receiver monitors its own
-# Rajant path and polls only the selected socket, so it does not publish
-# duplicate messages when the broadcaster sends on both paths.
+# The receiver prefers Rajant and falls back to WiFi only after the Rajant
+# stream has been silent long enough. If no WiFi IP is known yet, it scans the
+# robot subnet for a host that is answering on the RTK port.
 
 import threading
 import time
@@ -20,139 +17,228 @@ from rclpy.node import Node
 from rtcm_msgs.msg import Message
 import zmq
 
-from rtk_correction.beacon import BeaconListener, scan_subnet
-from rtk_correction.network_health import HealthMonitor
+from rtk_correction.beacon import parse_wifi_info_message
 
 
 class RTKReceiver(Node):
-
     def __init__(self):
         super().__init__('rtk_receiver')
 
-        self.declare_parameter("ip", "10.10.10.10")
-        self.declare_parameter("port", 7507)
-        self.declare_parameter("rajant_interface", "rajant")
+        # Declare parameters
+        self.declare_parameter("rajant_ip", "10.10.10.10")
+        self.declare_parameter("wifi_ip", "192.168.129.100")
+        
+        self.declare_parameter("rtk_port", 7501)
+        self.declare_parameter("wifi_info_port", 7502)
+        
+        self.declare_parameter("rajant_stale_timeout", 5.0)
+        self.declare_parameter("wifi_stale_timeout", 5.0)
+        
+        self.declare_parameter("rajant_probe_interval", 4.0)
+        self.declare_parameter("wifi_probe_interval", 4.0)
 
-        self.declare_parameter("enable_wifi_failover", True)
-        self.declare_parameter("beacon_port", 7508)
-        self.declare_parameter("beacon_wait_timeout", 8.0)
-        self.declare_parameter("wifi_scan_subnet", "")  # e.g. "192.168.1.0/24"; "" disables scan fallback
+        # Get parameters
+        self.rajant_ip = self.get_parameter("rajant_ip").value
+        self.wifi_ip = self.get_parameter("wifi_ip").value
 
-        self.declare_parameter("stale_timeout", 5.0)
-
-        rajant_ip = self.get_parameter("ip").value
-        port = self.get_parameter("port").value
-        self.rajant_interface = self.get_parameter("rajant_interface").value
-        self.enable_wifi_failover = self.get_parameter("enable_wifi_failover").value
-        self.port = port
-        self.beacon_wait_timeout = self.get_parameter("beacon_wait_timeout").value
-        self.wifi_scan_subnet = self.get_parameter("wifi_scan_subnet").value
-        self.stale_timeout = self.get_parameter("stale_timeout").value
-
+        self.rtk_port = self.get_parameter("rtk_port").value
+        self.wifi_info_port = self.get_parameter("wifi_info_port").value
+        
+        self.rajant_stale_timeout = self.get_parameter("rajant_stale_timeout").value
+        self.wifi_stale_timeout = self.get_parameter("wifi_stale_timeout").value
+        
+        self.rajant_probe_interval = self.get_parameter("rajant_probe_interval").value
+        self.wifi_probe_interval = self.get_parameter("wifi_probe_interval").value
+        
         self.context_ = zmq.Context()
-        self.rajant_socket = self._create_sub_socket()
 
-        self.rajant_endpoint = f"tcp://{rajant_ip}:{port}"
+        # Set up socket for Rajant RTK corrections
+        self.rajant_socket = self.context_.socket(zmq.SUB)
+        self.rajant_socket.setsockopt_string(zmq.SUBSCRIBE, "")
+        self.rajant_endpoint = f"tcp://{self.rajant_ip}:{self.rtk_port}"
         self.rajant_socket.connect(self.rajant_endpoint)
-        self.get_logger().info(f"[RTK] Connected to Rajant broadcaster at {self.rajant_endpoint}")
+        self.get_logger().info(f"[RTK] Rajant connection ready at {self.rajant_endpoint}")
 
-        # WiFi is discovered asynchronously (beacon thread / scan thread);
-        # the actual socket.connect()/disconnect() calls happen on the main
-        # thread inside receive(), since ZMQ sockets aren't meant to be
-        # driven from multiple threads at once. `_wifi_pending` is how the
-        # background threads hand a newly-discovered address to the main
-        # loop.
-        self._pending_lock = threading.Lock()
-        self._wifi_pending = None
-        self.wifi_endpoint = None
+        # Set up socket for WiFi info
+        self.wifi_info_socket = self.context_.socket(zmq.SUB)
+        self.wifi_info_socket.setsockopt_string(zmq.SUBSCRIBE, "")
+        self.wifi_info_socket.connect(f"tcp://{self.rajant_ip}:{self.wifi_info_port}")
+        self.get_logger().info(
+            f"[RTK] Listening for WiFi discovery on {self.rajant_ip}:{self.wifi_info_port}"
+        )
+        
+        # Set up socket for WiFi RTK corrections if a WiFi IP is already known
         self.wifi_socket = None
-        self._scan_started = False
-        self._startup_time = time.monotonic()
-        self._active_path = "rajant"
-
-        self.health_monitor = None
-        if self.enable_wifi_failover:
-            self.health_monitor = HealthMonitor(
-                target=rajant_ip,
-                interface=self.rajant_interface,
-                interval=self.get_parameter("ping_interval").value,
-                timeout=self.get_parameter("ping_timeout").value,
-                fail_threshold=self.get_parameter("fail_threshold").value,
-                recover_threshold=self.get_parameter("recover_threshold").value,
-                on_change=self._on_rajant_health_change,
-                logger=self.get_logger(),
-            )
-            self.health_monitor.start()
-
-        self.beacon_listener = None
-        if self.enable_wifi_failover:
-            self.beacon_listener = BeaconListener(
-                beacon_port=self.get_parameter("beacon_port").value,
-                on_discover=self._queue_wifi_endpoint,
-                logger=self.get_logger(),
-            )
-            self.beacon_listener.start()
+        if(self.wifi_ip is not None and self.wifi_ip != ""):
+            self._set_wifi_endpoint(self.wifi_ip, self.rtk_port)        
+        
+        self._rajant_connected = True
+        self._wifi_connected = False
+        
+        self._last_rajant_msg = 0.0
+        self._last_wifi_msg = 0.0
+        
+        self._last_rajant_probe = 0.0
+        self._last_wifi_probe = 0.0
 
         self.pub = self.create_publisher(Message, '/rtcm', 1)
 
-        self._last_msg_time = None
-        self._stale_logged = False
+    def _set_wifi_endpoint(self, ip: str, port: int):
+        try:
+            endpoint = f"tcp://{ip}:{port}"
+            
+            if self.wifi_socket is not None:
+                        try:
+                            self.wifi_socket.close()
+                        except Exception:
+                            pass
 
-    def _create_sub_socket(self):
-        socket = self.context_.socket(zmq.SUB)
-        socket.setsockopt_string(zmq.SUBSCRIBE, "")
-        return socket
+            self.wifi_ip = ip
+            self.wifi_socket = self.context_.socket(zmq.SUB)
+            self.wifi_socket.setsockopt_string(zmq.SUBSCRIBE, "")
+            self.wifi_socket.connect(endpoint)
+            self.get_logger().info(f"[RTK] WiFi fallback connection ready at {endpoint}")
+        except Exception as e:
+            self.get_logger().error(f"[RTK] Failed to set WiFi endpoint {ip}:{port}: {e}")
 
-    def _queue_wifi_endpoint(self, ip: str, port: int):
-        with self._pending_lock:
-            self._wifi_pending = f"tcp://{ip}:{port}"
-
-    def _maybe_start_scan_fallback(self):
-        if (
-            not self.enable_wifi_failover
-            or self._scan_started
-            or not self.wifi_scan_subnet
-            or self.wifi_endpoint
-        ):
+    def _try_loading_wifi_info(self):
+        try:
+            msg = self.wifi_info_socket.recv(flags=zmq.NOBLOCK)
+        except zmq.Again:
             return
-        if time.monotonic() - self._startup_time < self.beacon_wait_timeout:
+
+        parsed = parse_wifi_info_message(msg)
+        if parsed is None:
+            return
+        ip, port = parsed
+        if ip and port:
+            self._set_wifi_endpoint(ip, port)
+            
+
+    def _publish_rtcm(self, rtcm_raw: bytes):
+        self.get_logger().info("[RTK] Received corrections", once=True)
+
+        msg = Message()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.message = rtcm_raw
+        self.pub.publish(msg)
+        
+    def _probe_wifi(self):
+        now = time.monotonic()
+        if self.wifi_socket is None:
+            return
+        if now - self._last_wifi_probe >= self.wifi_probe_interval:
+            self._last_wifi_probe = now
+            try:
+                rtcm_raw = self.wifi_socket.recv(flags=zmq.NOBLOCK)
+                self._publish_rtcm(rtcm_raw)
+                self._last_wifi_msg = now
+                self.get_logger().info("[RTK] WiFi connection recovered")
+                self._wifi_connected = True
+            except zmq.Again:
+                self.get_logger().warn(f"Probed wifi but no response; "
+                                       f"WiFi has been silent for {self.wifi_probe_interval}s;")
+
+    def _probe_rajant(self):
+            now = time.monotonic()
+            if self.rajant_socket is None:
+                return
+            if now - self._last_rajant_probe >= self.rajant_probe_interval:
+                self._last_rajant_probe = now
+                try:
+                    rtcm_raw = self.rajant_socket.recv(flags=zmq.NOBLOCK)
+                    self._publish_rtcm(rtcm_raw)
+                    self._last_rajant_msg = now
+                    self.get_logger().info("[RTK] Rajant connection recovered")
+                    self._rajant_connected = True
+                except zmq.Again:
+                    self.get_logger().warn(f"Probed rajent but no response; "
+                                           f"Rajant has been silent for {self.rajant_probe_interval}s;")
+
+    @staticmethod
+    def _read_socket(socket):
+        try:
+            return socket.recv(flags=zmq.NOBLOCK)
+        except zmq.Again:
+            return None
+
+    def _read_rajant(self, now):
+        rtcm_raw = self._read_socket(self.rajant_socket)
+        if rtcm_raw is None:
+            return False
+
+        self._last_rajant_msg = now
+        self._rajant_monitor_started = now
+        if self._rajant_state != "up":
+            message = "recovered" if self._rajant_state == "down" else "established"
+            self.get_logger().info(f"[RTK] Rajant connection {message}")
+        self._rajant_state = "up"
+        self._publish_rtcm(rtcm_raw)
+        return True
+
+    def _probe_rajant(self, now):
+        if now - self._last_rajant_probe < self.rajant_probe_interval:
+            return False
+
+        self._last_rajant_probe = now
+        rtcm_raw = self._read_socket(self.rajant_socket)
+        if rtcm_raw is None:
+            return False
+
+        self._last_rajant_msg = now
+        self._rajant_monitor_started = now
+        self.get_logger().info("[RTK] Rajant connection recovered; switching from WiFi")
+        self._rajant_state = "up"
+        self._using_wifi = False
+        self._publish_rtcm(rtcm_raw)
+        return True
+
+    def _read_wifi(self, now):
+        if not self._using_wifi or self.wifi_socket is None:
+            return False
+
+        rtcm_raw = self._read_socket(self.wifi_socket)
+        if rtcm_raw is None:
+            return False
+
+        self._last_wifi_msg = now
+        if self._wifi_state != "up":
+            self.get_logger().info("[RTK] WiFi connection established")
+        self._wifi_state = "up"
+        self._publish_rtcm(rtcm_raw)
+        return True
+
+    def _check_rajant_timeout(self, now):
+        last_seen = self._last_rajant_msg or self._rajant_monitor_started
+        if self._using_wifi or now - last_seen <= self.rajant_stale_timeout:
             return
 
-        self._scan_started = True
+        if self._rajant_state == "up":
+            self.get_logger().warn("[RTK] Rajant connection lost")
+        if self._rajant_state != "down":
+            self.get_logger().warn(
+                f"[RTK] Rajant has been silent for {self.rajant_stale_timeout}s; "
+                "trying WiFi fallback"
+            )
+        self._rajant_state = "down"
+
+        self._using_wifi = self.wifi_socket is not None
+        if self.wifi_socket is None:
+            self._maybe_scan_subnet()
+
+    def _check_wifi_timeout(self, now):
+        if not self._using_wifi or self._last_wifi_msg is None:
+            return
+        if now - self._last_wifi_msg <= self.wifi_stale_timeout:
+            return
+
+        if self._wifi_state == "up":
+            self.get_logger().warn("[RTK] WiFi connection lost")
+        self._wifi_state = "down"
         self.get_logger().warn(
-            f"[RTK] No beacon heard after {self.beacon_wait_timeout}s -- "
-            f"falling back to scanning {self.wifi_scan_subnet} for the broadcaster"
+            f"[RTK] WiFi has been silent for {self.wifi_stale_timeout}s"
         )
-
-        def scan_and_queue():
-            found = scan_subnet(self.wifi_scan_subnet, self.port)
-            if found:
-                self.get_logger().info(f"[RTK] Scan found broadcaster at {found}")
-                self._queue_wifi_endpoint(found, self.port)
-            else:
-                self.get_logger().warn(f"[RTK] Scan of {self.wifi_scan_subnet} found nothing")
-
-        threading.Thread(target=scan_and_queue, daemon=True).start()
-
-    def _apply_pending_wifi_endpoint(self):
-        with self._pending_lock:
-            new_endpoint = self._wifi_pending
-            self._wifi_pending = None
-
-        if (
-            not self.enable_wifi_failover
-            or new_endpoint is None
-            or new_endpoint == self.wifi_endpoint
-        ):
-            return
-
-        if self.wifi_socket is not None:
-            self.wifi_socket.close()
-
-        self.wifi_socket = self._create_sub_socket()
-        self.wifi_socket.connect(new_endpoint)
-        self.wifi_endpoint = new_endpoint
-        self.get_logger().info(f"[RTK] WiFi standby connection ready at {new_endpoint}")
+        self._last_wifi_msg = None
 
     def _on_rajant_health_change(self, healthy: bool):
         if healthy:
@@ -174,56 +260,48 @@ class RTKReceiver(Node):
 
     def receive(self):
         while rclpy.ok():
-            self._apply_pending_wifi_endpoint()
-            self._maybe_start_scan_fallback()
-            active_socket = self._select_socket()
-
-            try:
-                rtcm_raw = active_socket.recv(flags=zmq.NOBLOCK)
-                self.get_logger().info("[RTK] Recieved corrections", once=True)
-
-                self._last_msg_time = time.monotonic()
-                if self._stale_logged:
-                    self.get_logger().info("[RTK] Corrections resumed")
-                    self._stale_logged = False
-
-                msg = Message()
-                msg.header.stamp = self.get_clock().now().to_msg()
-                msg.message = rtcm_raw
-                self.pub.publish(msg)
-
-            except zmq.Again:
-                self._check_stale()
-
+            self._try_loading_wifi_info()
+            now = time.monotonic()
+            
+            if(self._rajant_connected and self.rajant_socket is not None):
+                try:
+                    rtcm_raw = self.rajant_socket.recv(flags=zmq.NOBLOCK)
+                    self._last_rajant_msg = now
+                    self._publish_rtcm(rtcm_raw)
+                except zmq.Again:
+                    if now - self._last_rajant_msg > self.rajant_stale_timeout:
+                        self._rajant_connected = False
+                        self.get_logger().warn("[RTK] Rajant connection lost")
+            elif(self._wifi_connected and self.wifi_socket is not None):
+                self._probe_rajant()
+                if not self._rajant_connected:
+                    try:
+                        rtcm_raw = self.wifi_socket.recv(flags=zmq.NOBLOCK)
+                        self._last_wifi_msg = now
+                        self._publish_rtcm(rtcm_raw)
+                    except zmq.Again:
+                        if now - self._last_wifi_msg > self.wifi_stale_timeout:
+                            self._wifi_connected = False
+                            self.get_logger().warn("[RTK] WiFi connection lost")
+            else:
+                self._probe_rajant()
+                self._probe_wifi()
+                
             time.sleep(0.1)
 
-    def _check_stale(self):
-        if self._last_msg_time is None or self._stale_logged:
-            return
-        if time.monotonic() - self._last_msg_time > self.stale_timeout:
-            self._stale_logged = True
-            self.get_logger().warn(
-                f"[RTK] No corrections received for over {self.stale_timeout}s -- "
-                "link (Rajant and WiFi) may be down"
-            )
-
-    def destroy_node(self):
-        if self.health_monitor is not None:
-            self.health_monitor.stop()
-        if self.beacon_listener is not None:
-            self.beacon_listener.stop()
         self.rajant_socket.close()
         if self.wifi_socket is not None:
             self.wifi_socket.close()
+        self.wifi_info_socket.close()
         self.context_.term()
+
+    def destroy_node(self):
         super().destroy_node()
 
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-
     node = RTKReceiver()
-
     try:
         node.receive()
     except KeyboardInterrupt:
