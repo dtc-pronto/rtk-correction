@@ -81,7 +81,7 @@ class RTKReceiver(Node):
         self._last_rajant_probe = 0.0
         self._last_wifi_probe = 0.0
 
-        self.pub = self.create_publisher(Message, '/rtcm', 1)
+        self.pub = self.create_publisher(Message, '/moving_base/rtcm', 1)
 
     def _set_wifi_endpoint(self, ip: str, port: int):
         try:
