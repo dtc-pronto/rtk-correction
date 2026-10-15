@@ -69,6 +69,7 @@ class RTKReceiver(Node):
         
         # Set up socket for WiFi RTK corrections if a WiFi IP is already known
         self.wifi_socket = None
+        self.wifi_endpoint = None
         if(self.wifi_ip is not None and self.wifi_ip != ""):
             self._set_wifi_endpoint(self.wifi_ip, self.rtk_port)        
         
@@ -84,22 +85,27 @@ class RTKReceiver(Node):
         self.pub = self.create_publisher(Message, '/rtcm', 1)
 
     def _set_wifi_endpoint(self, ip: str, port: int):
+        endpoint = f"tcp://{ip}:{port}"
+        # The broadcaster repeats discovery with every correction. Keep the
+        # existing subscription (and its queued data) until the address changes.
+        if self.wifi_socket is not None and endpoint == self.wifi_endpoint:
+            return
+        new_socket = None
         try:
-            endpoint = f"tcp://{ip}:{port}"
-            
-            if self.wifi_socket is not None:
-                        try:
-                            self.wifi_socket.close()
-                        except Exception:
-                            pass
-
-            self.wifi_ip = ip
-            self.wifi_socket = self.context_.socket(zmq.SUB)
-            self.wifi_socket.setsockopt_string(zmq.SUBSCRIBE, "")
-            self.wifi_socket.connect(endpoint)
-            self.get_logger().info(f"[RTK] WiFi fallback connection ready at {endpoint}")
+            new_socket = self.context_.socket(zmq.SUB)
+            new_socket.setsockopt_string(zmq.SUBSCRIBE, "")
+            new_socket.connect(endpoint)
         except Exception as e:
+            if new_socket is not None:
+                new_socket.close()
             self.get_logger().error(f"[RTK] Failed to set WiFi endpoint {ip}:{port}: {e}")
+        else:
+            if self.wifi_socket is not None:
+                self.wifi_socket.close()
+            self.wifi_ip = ip
+            self.wifi_socket = new_socket
+            self.wifi_endpoint = endpoint
+            self.get_logger().info(f"[RTK] WiFi fallback connection ready at {endpoint}")
 
     def _try_loading_wifi_info(self):
         try:
@@ -136,7 +142,7 @@ class RTKReceiver(Node):
                 self.get_logger().info("[RTK] WiFi connection recovered")
                 self._wifi_connected = True
             except zmq.Again:
-                self.get_logger().warn(f"Probed wifi but no response; "
+                self.get_logger().debug(f"Probed wifi but no response; "
                                        f"WiFi has been silent for {self.wifi_probe_interval}s;")
 
     def _probe_rajant(self):
@@ -152,7 +158,7 @@ class RTKReceiver(Node):
                     self.get_logger().info("[RTK] Rajant connection recovered")
                     self._rajant_connected = True
                 except zmq.Again:
-                    self.get_logger().warn(f"Probed rajent but no response; "
+                    self.get_logger().debug(f"Probed rajant but no response; "
                                            f"Rajant has been silent for {self.rajant_probe_interval}s;")
 
     def receive(self):

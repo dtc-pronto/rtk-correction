@@ -1,12 +1,15 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
 
     args = [
+        DeclareLaunchArgument(
+            'log_level', default_value=EnvironmentVariable('COMMON_LOG_LEVEL', default_value='info')
+        ),
         DeclareLaunchArgument('respawn', default_value='false'),
         DeclareLaunchArgument('respawn_delay', default_value='5.0'),
         # Rajant -- primary data path, static/known address, connected immediately
@@ -35,6 +38,7 @@ def launch_setup(context, *args, **kwargs):
         executable='receiver',
         name='rtk_receiver',
         output='screen',
+        arguments=['--ros-args', '--log-level', LaunchConfiguration('log_level')],
         respawn=LaunchConfiguration('respawn'),
         respawn_delay=respawn_delay,
         emulate_tty=True,
