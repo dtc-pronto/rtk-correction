@@ -1,5 +1,9 @@
 FROM dtcpronto/ros-jazzy:full
 
+USER dtc
+WORKDIR /home/dtc
+RUN mkdir -p /home/dtc/ws/src
+
 RUN sudo apt update && sudo apt install -y \
  ros-jazzy-rtcm-msgs \
  python3-zmq \
@@ -12,14 +16,14 @@ RUN sudo apt update && sudo apt install -y \
 # symbol in fastcdr). Bring everything onto one consistent snapshot.
 RUN sudo apt update && sudo apt upgrade -y
 
-RUN pip3 install --break-system-packages pyrtcm
+RUN pip3 install --user --break-system-packages pyrtcm
 
-COPY ./rtk-correction ws/src/rtk-correction
+COPY --chown=dtc:dtc ./rtk-correction ws/src/rtk-correction
 
 RUN /bin/bash -c "\
     source /opt/ros/jazzy/setup.bash && \
     cd /home/dtc/ws && \
     colcon build --symlink-install --cmake-clean-cache"
 
-COPY ./entrypoint.bash entrypoint.bash
+COPY --chown=dtc:dtc ./entrypoint.bash entrypoint.bash
 RUN sudo chmod +x entrypoint.bash
