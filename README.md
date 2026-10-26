@@ -60,7 +60,7 @@ services:
     build:
       context: ./common/rtk-correction
       dockerfile: Dockerfile.x86
-    image: dtc-${HOSTNAME}:rtk
+    image: dtc-platform-${HOSTNAME}:rtk
     environment:
       RUN: "${RTK:-true}"
       BASESTATION: "${BASESTATION:-false}"
