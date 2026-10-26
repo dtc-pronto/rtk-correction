@@ -20,7 +20,6 @@ from rtk_correction.beacon import WIFI_INFO_PREFIX
 
 INET_RE = re.compile(r"inet\s+(\d+\.\d+\.\d+\.\d+)")
 
-
 def get_interface_ipv4(interface: str) -> Optional[str]:
     try:
         result = subprocess.run(
@@ -42,12 +41,12 @@ class Basestation(Node):
     def __init__(self):
         super().__init__("rtk_broadcaster")
 
-        self.declare_parameter("rajant_ip", "10.10.10.10")
+        self.declare_parameter("basestation_rajant_ip", "10.10.10.10")
         self.declare_parameter("rtk_port", 7501)
         self.declare_parameter("wifi_info_port", 7502)
         self.declare_parameter("wifi_interface", "wlan0")
 
-        self.rajant_ip = self.get_parameter("rajant_ip").value
+        self.basestation_rajant_ip = self.get_parameter("basestation_rajant_ip").value
         self.rtk_port = self.get_parameter("rtk_port").value
         self.wifi_info_port = self.get_parameter("wifi_info_port").value
         self.wifi_interface = self.get_parameter("wifi_interface").value
@@ -56,8 +55,8 @@ class Basestation(Node):
 
         self.rajant_socket = self.context_.socket(zmq.PUB)
         try:
-            self.rajant_socket.bind(f"tcp://{self.rajant_ip}:{self.rtk_port}")
-            self.get_logger().info(f"[RTK] Rajant PUB bound at {self.rajant_ip}:{self.rtk_port}")
+            self.rajant_socket.bind(f"tcp://{self.basestation_rajant_ip}:{self.rtk_port}")
+            self.get_logger().info(f"[RTK] Rajant PUB bound at {self.basestation_rajant_ip}:{self.rtk_port}")
         except zmq.ZMQError as e:
             self.get_logger().error(f"[RTK] Could not bind Rajant socket: {e}")
             self.rajant_socket = None
@@ -80,12 +79,12 @@ class Basestation(Node):
                 "WiFi RTK will not be available this run"
             )
 
-        if self.rajant_ip:
+        if self.basestation_rajant_ip:
             self.wifi_info_socket = self.context_.socket(zmq.PUB)
             try:
-                self.wifi_info_socket.bind(f"tcp://{self.rajant_ip}:{self.wifi_info_port}")
+                self.wifi_info_socket.bind(f"tcp://{self.basestation_rajant_ip}:{self.wifi_info_port}")
                 self.get_logger().info(
-                    f"[RTK] WiFi-info PUB bound at {self.rajant_ip}:{self.wifi_info_port}"
+                    f"[RTK] WiFi-info PUB bound at {self.basestation_rajant_ip}:{self.wifi_info_port}"
                 )
             except zmq.ZMQError as e:
                 self.get_logger().error(f"[RTK] Could not bind WiFi-info socket: {e}")
@@ -96,30 +95,42 @@ class Basestation(Node):
             rtr = RTCMReader(stream)
             self.get_logger().info("[RTK] Connected to GPS")
             while rclpy.ok():
+                # Read data from RTK Facet
                 raw_data, parsed_data = rtr.read()
                 if parsed_data is None:
                     continue
-
-                self.get_logger().info("[RTK] Broadcasting RTK corrections", once=True)
-
+                self.get_logger().debug("[RTK] Still recieving data from rtk facet",
+                                        throttle_duration_sec=5.0)
+                
                 if self.rajant_socket is not None:
+                    # Send the RTK corrections over Rajant
                     try:
                         self.rajant_socket.send(raw_data)
+                        self.get_logger().info("[RTK] Beginning to broadcast RTK corrections over rajant",once=True)
+                        self.get_logger().debug("[RTK] Still broadcasting RTK corrections over rajant",
+                                                 throttle_duration_sec=5.0)
                     except zmq.ZMQError as e:
                         self.get_logger().error(f"[RTK] Rajant send failed: {e}")
 
+                    # Send the WiFi IP over Rajant so receivers can learn it
+                    if self.wifi_ip and self.wifi_info_socket is not None:
+                        info = f"{WIFI_INFO_PREFIX}:{self.wifi_ip}:{self.rtk_port}".encode()
+                        try:
+                            self.wifi_info_socket.send(info)
+                            self.get_logger().debug("[RTK] Still broadcasting my WiFi info over Rajant",
+                                                    throttle_duration_sec=5.0)
+                        except zmq.ZMQError as e:
+                            self.get_logger().error(f"[RTK] WiFi-info send failed: {e}")
                 if self.wifi_socket is not None:
+                    # Send the RTK corrections over WiFi
                     try:
                         self.wifi_socket.send(raw_data)
+                        self.get_logger().debug("[RTK] Still broadcasting RTK corrections over WiFi",
+                                                throttle_duration_sec=5.0)
                     except zmq.ZMQError as e:
                         self.get_logger().error(f"[RTK] WiFi send failed: {e}")
 
-                if self.wifi_ip and self.wifi_info_socket is not None:
-                    info = f"{WIFI_INFO_PREFIX}:{self.wifi_ip}:{self.rtk_port}".encode()
-                    try:
-                        self.wifi_info_socket.send(info)
-                    except zmq.ZMQError as e:
-                        self.get_logger().error(f"[RTK] WiFi-info send failed: {e}")
+                
 
     def destroy_node(self):
         if self.rajant_socket is not None:
@@ -142,7 +153,6 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()

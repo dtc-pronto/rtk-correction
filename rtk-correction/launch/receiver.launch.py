@@ -1,57 +1,53 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
-from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 from launch_ros.actions import Node
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 
 
 def generate_launch_description():
+    log_level_arg = DeclareLaunchArgument('log_level', default_value='info')
 
-    args = [
-        DeclareLaunchArgument(
-            'log_level', default_value=EnvironmentVariable('COMMON_LOG_LEVEL', default_value='info')
-        ),
-        DeclareLaunchArgument('respawn', default_value='false'),
-        DeclareLaunchArgument('respawn_delay', default_value='5.0'),
-        # Rajant -- primary data path, static/known address, connected immediately
-        DeclareLaunchArgument('rajant_ip', default_value='10.10.10.10'),
-        DeclareLaunchArgument('rtk_port', default_value='7501'),
-        DeclareLaunchArgument('wifi_info_port', default_value='7502'),
+    # Network parameters
+    basestation_rajant_ip_arg = DeclareLaunchArgument('basestation_rajant_ip', default_value='10.10.10.10')
+    rtk_port_arg = DeclareLaunchArgument('rtk_port', default_value='7501')
+    wifi_info_port_arg = DeclareLaunchArgument('wifi_info_port', default_value='7502')
+    basestation_wifi_ip_arg = DeclareLaunchArgument('basestation_wifi_ip', default_value='192.168.60.10')
+    
+    # Hysteresis for deciding when Rajant is effectively stale
+    rajant_stale_timeout_arg = DeclareLaunchArgument('rajant_stale_timeout', default_value='5.0')
+    wifi_stale_timeout_arg = DeclareLaunchArgument('wifi_stale_timeout', default_value='5.0')
+    rajant_probe_interval_arg = DeclareLaunchArgument('rajant_probe_interval', default_value='4.0')
+    wifi_probe_interval_arg = DeclareLaunchArgument('wifi_probe_interval', default_value='4.0')
 
-        # WiFi discovery -- learned WiFi endpoint first, then subnet scan fallback
-        DeclareLaunchArgument('wifi_ip', default_value='192.168.60.10'),
+   
+    receiver_node = Node(
+            package='rtk_correction',
+            executable='receiver',
+            name='rtk_receiver',
+            output='screen',
+            arguments=['--ros-args', '--log-level', LaunchConfiguration('log_level')],
+            emulate_tty=True,
+            parameters=[{
+                'basestation_rajant_ip': LaunchConfiguration('basestation_rajant_ip'),
+                'rtk_port': LaunchConfiguration('rtk_port'),
+                'wifi_info_port': LaunchConfiguration('wifi_info_port'),
+                'basestation_wifi_ip': LaunchConfiguration('basestation_wifi_ip'),
+                'rajant_stale_timeout': LaunchConfiguration('rajant_stale_timeout'),
+                'wifi_stale_timeout': LaunchConfiguration('wifi_stale_timeout'),
+                'rajant_probe_interval': LaunchConfiguration('rajant_probe_interval'),
+                'wifi_probe_interval': LaunchConfiguration('wifi_probe_interval'),
+            }],
+        )
 
-        # Hysteresis for deciding when Rajant is effectively stale
-        DeclareLaunchArgument('rajant_stale_timeout', default_value='5.0'),
-        DeclareLaunchArgument('wifi_stale_timeout', default_value='5.0'),
-        DeclareLaunchArgument('rajant_probe_interval', default_value='4.0'),
-        DeclareLaunchArgument('wifi_probe_interval', default_value='4.0'),
-    ]
-
-    return LaunchDescription(args + [OpaqueFunction(function=launch_setup)])
-
-
-def launch_setup(context, *args, **kwargs):
-    # Jazzy requires a numeric respawn_delay; resolve it at launch execution.
-    respawn_delay = float(LaunchConfiguration('respawn_delay').perform(context))
-    node = Node(
-        package='rtk_correction',
-        executable='receiver',
-        name='rtk_receiver',
-        output='screen',
-        arguments=['--ros-args', '--log-level', LaunchConfiguration('log_level')],
-        respawn=LaunchConfiguration('respawn'),
-        respawn_delay=respawn_delay,
-        emulate_tty=True,
-        parameters=[{
-            'rajant_ip': LaunchConfiguration('rajant_ip'),
-            'rtk_port': LaunchConfiguration('rtk_port'),
-            'wifi_info_port': LaunchConfiguration('wifi_info_port'),
-            'wifi_ip': LaunchConfiguration('wifi_ip'),
-            'rajant_stale_timeout': LaunchConfiguration('rajant_stale_timeout'),
-            'wifi_stale_timeout': LaunchConfiguration('wifi_stale_timeout'),
-            'rajant_probe_interval': LaunchConfiguration('rajant_probe_interval'),
-            'wifi_probe_interval': LaunchConfiguration('wifi_probe_interval'),
-        }],
-    )
-
-    return [node]
+    return LaunchDescription([
+        log_level_arg,
+        basestation_rajant_ip_arg,
+        rtk_port_arg,
+        basestation_wifi_ip_arg,
+        wifi_info_port_arg,
+        rajant_stale_timeout_arg,
+        wifi_stale_timeout_arg,
+        rajant_probe_interval_arg,
+        wifi_probe_interval_arg,
+        receiver_node,
+    ])

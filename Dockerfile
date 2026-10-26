@@ -1,4 +1,4 @@
-FROM dtcpronto/ros-jazzy:l4t
+FROM dtcpronto/ros-jazzy:base
 
 USER dtc
 WORKDIR /home/dtc

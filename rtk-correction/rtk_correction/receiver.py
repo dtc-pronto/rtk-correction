@@ -25,28 +25,26 @@ class RTKReceiver(Node):
         super().__init__('rtk_receiver')
 
         # Declare parameters
-        self.declare_parameter("rajant_ip", "10.10.10.10")
-        self.declare_parameter("wifi_ip", "192.168.129.100")
+        self.declare_parameter("basestation_rajant_ip", "10.10.10.10")
+        self.declare_parameter("basestation_wifi_ip", "192.168.129.100")
         
         self.declare_parameter("rtk_port", 7501)
         self.declare_parameter("wifi_info_port", 7502)
         
         self.declare_parameter("rajant_stale_timeout", 5.0)
         self.declare_parameter("wifi_stale_timeout", 5.0)
-        
         self.declare_parameter("rajant_probe_interval", 4.0)
         self.declare_parameter("wifi_probe_interval", 4.0)
 
         # Get parameters
-        self.rajant_ip = self.get_parameter("rajant_ip").value
-        self.wifi_ip = self.get_parameter("wifi_ip").value
+        self.basestation_rajant_ip = self.get_parameter("basestation_rajant_ip").value
+        self.basestation_wifi_ip = self.get_parameter("basestation_wifi_ip").value
 
         self.rtk_port = self.get_parameter("rtk_port").value
         self.wifi_info_port = self.get_parameter("wifi_info_port").value
         
         self.rajant_stale_timeout = self.get_parameter("rajant_stale_timeout").value
         self.wifi_stale_timeout = self.get_parameter("wifi_stale_timeout").value
-        
         self.rajant_probe_interval = self.get_parameter("rajant_probe_interval").value
         self.wifi_probe_interval = self.get_parameter("wifi_probe_interval").value
         
@@ -55,23 +53,23 @@ class RTKReceiver(Node):
         # Set up socket for Rajant RTK corrections
         self.rajant_socket = self.context_.socket(zmq.SUB)
         self.rajant_socket.setsockopt_string(zmq.SUBSCRIBE, "")
-        self.rajant_endpoint = f"tcp://{self.rajant_ip}:{self.rtk_port}"
+        self.rajant_endpoint = f"tcp://{self.basestation_rajant_ip}:{self.rtk_port}"
         self.rajant_socket.connect(self.rajant_endpoint)
         self.get_logger().info(f"[RTK] Rajant connection ready at {self.rajant_endpoint}")
 
         # Set up socket for WiFi info
         self.wifi_info_socket = self.context_.socket(zmq.SUB)
         self.wifi_info_socket.setsockopt_string(zmq.SUBSCRIBE, "")
-        self.wifi_info_socket.connect(f"tcp://{self.rajant_ip}:{self.wifi_info_port}")
+        self.wifi_info_socket.connect(f"tcp://{self.basestation_rajant_ip}:{self.wifi_info_port}")
         self.get_logger().info(
-            f"[RTK] Listening for WiFi discovery on {self.rajant_ip}:{self.wifi_info_port}"
+            f"[RTK] Listening for WiFi discovery on {self.basestation_rajant_ip}:{self.wifi_info_port}"
         )
         
         # Set up socket for WiFi RTK corrections if a WiFi IP is already known
         self.wifi_socket = None
         self.wifi_endpoint = None
-        if(self.wifi_ip is not None and self.wifi_ip != ""):
-            self._set_wifi_endpoint(self.wifi_ip, self.rtk_port)        
+        if(self.basestation_wifi_ip is not None and self.basestation_wifi_ip != ""):
+            self._set_wifi_endpoint(self.basestation_wifi_ip, self.rtk_port)        
         
         self._rajant_connected = True
         self._wifi_connected = False
@@ -95,6 +93,7 @@ class RTKReceiver(Node):
             new_socket = self.context_.socket(zmq.SUB)
             new_socket.setsockopt_string(zmq.SUBSCRIBE, "")
             new_socket.connect(endpoint)
+            self.get_logger().info(f"[RTK] WiFi SUB bound at {ip}:{port}")
         except Exception as e:
             if new_socket is not None:
                 new_socket.close()
@@ -102,7 +101,7 @@ class RTKReceiver(Node):
         else:
             if self.wifi_socket is not None:
                 self.wifi_socket.close()
-            self.wifi_ip = ip
+            self.basestation_wifi_ip = ip
             self.wifi_socket = new_socket
             self.wifi_endpoint = endpoint
             self.get_logger().info(f"[RTK] WiFi fallback connection ready at {endpoint}")
@@ -110,7 +109,9 @@ class RTKReceiver(Node):
     def _try_loading_wifi_info(self):
         try:
             msg = self.wifi_info_socket.recv(flags=zmq.NOBLOCK)
+            self.get_logger().debug("[RTK] Received WiFi info message", throttle_duration_sec=5.0)
         except zmq.Again:
+            self.get_logger().debug("[RTK] No WiFi info available", throttle_duration_sec=5.0)
             return
 
         parsed = parse_wifi_info_message(msg)
@@ -119,31 +120,12 @@ class RTKReceiver(Node):
         ip, port = parsed
         if ip and port:
             self._set_wifi_endpoint(ip, port)
-            
 
     def _publish_rtcm(self, rtcm_raw: bytes):
-        self.get_logger().info("[RTK] Received corrections", once=True)
-
         msg = Message()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.message = rtcm_raw
         self.pub.publish(msg)
-        
-    def _probe_wifi(self):
-        now = time.monotonic()
-        if self.wifi_socket is None:
-            return
-        if now - self._last_wifi_probe >= self.wifi_probe_interval:
-            self._last_wifi_probe = now
-            try:
-                rtcm_raw = self.wifi_socket.recv(flags=zmq.NOBLOCK)
-                self._publish_rtcm(rtcm_raw)
-                self._last_wifi_msg = now
-                self.get_logger().info("[RTK] WiFi connection recovered")
-                self._wifi_connected = True
-            except zmq.Again:
-                self.get_logger().debug(f"Probed wifi but no response; "
-                                       f"WiFi has been silent for {self.wifi_probe_interval}s;")
 
     def _probe_rajant(self):
             now = time.monotonic()
@@ -160,6 +142,21 @@ class RTKReceiver(Node):
                 except zmq.Again:
                     self.get_logger().debug(f"Probed rajant but no response; "
                                            f"Rajant has been silent for {self.rajant_probe_interval}s;")
+    def _probe_wifi(self):
+        now = time.monotonic()
+        if self.wifi_socket is None:
+            return
+        if now - self._last_wifi_probe >= self.wifi_probe_interval:
+            self._last_wifi_probe = now
+            try:
+                rtcm_raw = self.wifi_socket.recv(flags=zmq.NOBLOCK)
+                self._publish_rtcm(rtcm_raw)
+                self._last_wifi_msg = now
+                self.get_logger().info("[RTK] WiFi connection recovered")
+                self._wifi_connected = True
+            except zmq.Again:
+                self.get_logger().debug(f"Probed wifi but no response; "
+                                       f"WiFi has been silent for {self.wifi_probe_interval}s;")
 
     def receive(self):
         while rclpy.ok():
@@ -171,6 +168,7 @@ class RTKReceiver(Node):
                     rtcm_raw = self.rajant_socket.recv(flags=zmq.NOBLOCK)
                     self._last_rajant_msg = now
                     self._publish_rtcm(rtcm_raw)
+                    self.get_logger().debug("[RTK] Received RTK corrections over rajant", throttle_duration_sec=5.0)
                 except zmq.Again:
                     if now - self._last_rajant_msg > self.rajant_stale_timeout:
                         self._rajant_connected = False
@@ -182,6 +180,7 @@ class RTKReceiver(Node):
                         rtcm_raw = self.wifi_socket.recv(flags=zmq.NOBLOCK)
                         self._last_wifi_msg = now
                         self._publish_rtcm(rtcm_raw)
+                        self.get_logger().debug("[RTK] Received RTK corrections over WiFi", throttle_duration_sec=5.0)
                     except zmq.Again:
                         if now - self._last_wifi_msg > self.wifi_stale_timeout:
                             self._wifi_connected = False
