@@ -27,3 +27,5 @@ RUN /bin/bash -c "\
 
 COPY --chown=dtc:dtc ./entrypoint.bash entrypoint.bash
 RUN sudo chmod +x entrypoint.bash
+
+ENTRYPOINT ["/home/dtc/entrypoint.bash"]
